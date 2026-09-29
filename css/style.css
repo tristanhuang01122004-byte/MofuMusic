@@ -341,3 +341,10 @@ label.num input { width: 70px; }
   .step .l { font-size: 11px; }
 }
 .rank-card .ranks { flex: 1 1 100%; }
+
+/* ---------- Application installée (PWA) ---------- */
+.top { padding-top: max(8px, env(safe-area-inset-top)); padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+footer { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+#toasts { bottom: max(18px, env(safe-area-inset-bottom)); }
+body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+@media (display-mode: standalone) { footer { font-size: 11px; } }

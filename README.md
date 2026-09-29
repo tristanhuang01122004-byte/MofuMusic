@@ -38,10 +38,20 @@ En ligne avec GitHub Pages : dans le dépôt, va dans *Settings → Pages → Bu
 
 🎧 **Mets un casque** pour les exercices où de la musique joue pendant que tu chantes, sinon le micro entend la musique à la place de ta voix.
 
+## 📱 Installer sur ton téléphone
+
+MofuMusic est une **application web installable** (PWA) : une fois installée, elle a son icône sur l'écran d'accueil, s'ouvre en plein écran et marche même sans connexion.
+
+1. Mets l'app en ligne avec GitHub Pages (voir plus haut) et ouvre le lien sur ton téléphone.
+2. **iPhone** : ouvre le lien dans **Safari**, appuie sur **Partager** (le carré avec la flèche), puis **Sur l'écran d'accueil**.
+3. **Android** : ouvre le lien dans **Chrome**, appuie sur **⋮**, puis **Installer l'application** (ou **Ajouter à l'écran d'accueil**).
+4. Au premier lancement, autorise le micro.
+
 ## Structure
 
 ```
 index.html          page unique
+manifest.webmanifest, sw.js   application installable + mode hors ligne
 css/style.css       thème sombre aux couleurs mofusand
 js/music.js         théorie : notes épelées, intervalles, tonalités, harmonies, détection de tonalité
 js/audio.js         synthé Web Audio, métronome, micro, détection de hauteur YIN, analyse de fichiers
