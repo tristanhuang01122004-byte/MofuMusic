@@ -272,17 +272,17 @@ const App = (() => {
 
   // ---------------- Profil ----------------
   let micStop = null;
-  function stopMicTest() { if (micStop) { micStop(); micStop = null; Audio.closeMic(); } }
+  function stopMicTest() { if (micStop) { micStop(); micStop = null; Audio.closeMic(true); } }
   function renderProfile() {
     stopMicTest();
     const root = $('#view-profile'); root.innerHTML = '';
     const st = Game.state, rk = Game.rankOf(st.xp);
-    const set = (k, v) => { st.settings[k] = v; Game.save(); if (k === 'naming') Music.setNaming(v); if (k === 'volume') Audio.setVolume(v); };
+    const set = (k, v) => { st.settings[k] = v; Game.save(); if (k === 'naming') Music.setNaming(v); if (k === 'volume') Audio.setVolume(v); if (k === 'micMode') { Audio.setMicMode(v); Audio.closeMic(true); } };
     const sel = (k, opts) => h('select', { onchange: e => { set(k, e.target.value); renderProfile(); } }, opts.map(([v, l]) => h('option', { value: v, selected: st.settings[k] === v }, l)));
     const chk = (k, l, d) => h('label.check' + (st.settings[k] ? '.on' : ''), h('input', { type: 'checkbox', checked: st.settings[k], onchange: e => { set(k, e.target.checked); e.target.parentNode.classList.toggle('on', e.target.checked); } }), h('span', l, d ? h('small.dim', ' — ' + d) : null));
     const meterEl = h('div'); const meter = new UI.Meter(meterEl); meter.reset('Appuie sur « Tester le micro »');
     const diag = h('p.dim.small');
-    const showDiag = () => { const i = Audio.info(); diag.textContent = 'Audio : ' + i.state + (i.rate ? ' · ' + i.rate + ' Hz' : '') + ' · micro ' + (i.mic ? 'ouvert' : 'fermé') + (i.session !== 'n/a' ? ' · session ' + i.session : ''); };
+    const showDiag = () => { const i = Audio.info(); diag.textContent = 'Audio : ' + i.state + (i.rate ? ' · ' + i.rate + ' Hz' : '') + ' · micro ' + (i.mic ? 'ouvert (' + i.track + ')' : 'fermé') + (i.session !== 'n/a' ? ' · session ' + i.session : '') + (i.ios ? ' · iPhone' + (i.app ? ' app' : ' Safari') : '') + (i.keep ? ' · micro gardé ouvert' : ''); };
     const stats = Object.entries(st.stats).filter(([, v]) => v.n >= 2).map(([k, v]) => ({ k, label: statLabel(k), p: v.ok / v.n, n: v.n })).sort((a, b) => a.p - b.p);
     root.append(h('h2', '🐱 Profil'),
       h('div.grid2',
@@ -291,6 +291,7 @@ const App = (() => {
           h('div.ranks', Game.RANKS.map((r, i) => h('div.rank' + (i <= rk.index ? '.on' : ''), { title: r.name + ' — ' + r.xp + ' XP' }, h('img', { src: r.cat, alt: '' }), h('small', r.name), h('small.dim', r.xp + ' XP'))))),
         h('div.card', h('h3', '⚙️ Réglages'),
           h('label.field', 'Ta tessiture ', sel('range', Object.entries(Music.RANGES).map(([k, r]) => [k, r.label + ' : ' + Music.midiName(r.lo, true) + '–' + Music.midiName(r.hi, true)]))),
+          h('label.field', 'Micro entre deux essais ', sel('micMode', [['auto', 'Automatique (recommandé)'], ['keep', 'Rester ouvert pendant l\u2019exercice'], ['close', 'Se fermer après chaque essai']])),
           h('label.field', 'Nom des notes ', sel('naming', [['fr', 'Do Ré Mi (solfège)'], ['en', 'C D E (anglo-saxon)']])),
           h('label.field', 'Tempo des mélodies ', h('input', { type: 'range', min: 50, max: 140, value: st.settings.tempo, oninput: e => { set('tempo', +e.target.value); e.target.nextSibling.textContent = e.target.value + ' bpm'; } }), h('span', st.settings.tempo + ' bpm')),
           h('label.field', 'Volume ', h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: st.settings.volume, oninput: e => set('volume', +e.target.value) })),
@@ -312,6 +313,8 @@ const App = (() => {
         meterEl, diag,
         h('details.help', h('summary', 'Pas de son ou le micro ne réagit pas ?'),
           h('ul',
+            h('li', h('b', 'App installée sur iPhone'), ' : iOS peut redemander l\u2019accès au micro à chaque ouverture de l\u2019app, c\u2019est normal, réponds « Autoriser ». Si le micro reste muet, ferme complètement l\u2019app (balaie-la vers le haut) et rouvre-la.'),
+            h('li', 'Si ça décroche encore, essaie le réglage « Micro entre deux essais » ci-dessus, ou utilise l\u2019app directement dans ', h('b', 'Safari'), ' (Réglages iPhone → Apps → Safari → Micro → Autoriser).'),
             h('li', h('b', 'iPhone en mode silencieux'), ' : désactive le bouton silencieux sur le côté et monte le volume (les boutons de volume, pendant qu\u2019un son joue).'),
             h('li', h('b', 'Écouteurs filaires'), ' : branche-les ', h('b', 'avant'), ' d\u2019ouvrir l\u2019app. Si tu les branches pendant l\u2019utilisation, appuie sur « Réinitialiser l\u2019audio » (ou ferme et rouvre l\u2019app).'),
             h('li', 'Le micro utilisé est celui des écouteurs s\u2019ils en ont un : chante près du micro du fil.'),
@@ -337,6 +340,7 @@ const App = (() => {
   function init() {
     Music.setNaming(S().naming);
     Audio.setVolume(S().volume);
+    Audio.setMicMode(S().micMode);
     $('#logo-cat').src = Game.CATS.logo;
     const nav = $('#nav');
     VIEWS.forEach(v => nav.appendChild(h('button', { type: 'button', 'data-v': v.id, onclick: () => show(v.id) }, h('span.i', v.icon), h('span.t', v.label))));

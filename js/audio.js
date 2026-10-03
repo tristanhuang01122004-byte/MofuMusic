@@ -27,7 +27,7 @@ const Audio = (() => {
   }
   // Jette le contexte (ex. écouteurs branchés/débranchés) : le prochain son en recrée un propre
   function rebuild() {
-    stopAll(); closeMic();
+    stopAll(); closeMic(true);
     if (ctx) { try { ctx.close(); } catch (e) { /* ignore */ } }
     ctx = null;
   }
@@ -38,6 +38,13 @@ const Audio = (() => {
   function setSession(type) {
     try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) { /* non supporté */ }
   }
+  const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const STANDALONE = window.navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches;
+  // 'auto' : sur iPhone (app installée), le micro reste ouvert pendant tout l'exercice,
+  // car iOS gère mal les ouvertures/fermetures répétées (redemande l'accès, micro muet…)
+  let micMode = 'auto';
+  const keepOpen = () => micMode === 'keep' || (micMode === 'auto' && IOS);
+  function setMicMode(m) { micMode = m || 'auto'; }
   let silentEl = null;
   function unlock() {
     ensure();
@@ -47,12 +54,12 @@ const Audio = (() => {
       const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource();
       src.buffer = b; src.connect(ctx.destination); src.start(0);
     } catch (e) { /* ignore */ }
-    if (!silentEl && /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent) && 'ontouchend' in document) {
+    if (!silentEl && IOS) {
       silentEl = document.createElement('audio');
       silentEl.setAttribute('x-webkit-airplay', 'deny'); silentEl.preload = 'auto'; silentEl.loop = true;
       silentEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAAAA';
-      silentEl.play().catch(() => {});
     }
+    if (silentEl && !mic && silentEl.paused) silentEl.play().catch(() => {});
   }
 
   const now = () => ensure().currentTime;
@@ -174,6 +181,9 @@ const Audio = (() => {
   let mic = null; // { stream, src, an, buf, hp }
   let opening = false;
   async function openMic() {
+    // sur iPhone il faut relancer l'audio PENDANT le toucher, avant toute attente
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    if (silentEl && !silentEl.paused) silentEl.pause();
     opening = true;
     try { return await openMicInner(); } finally { setTimeout(() => { opening = false; }, 1500); }
   }
@@ -208,8 +218,10 @@ const Audio = (() => {
     if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) { /* ignore */ } }
     return mic;
   }
-  function closeMic() {
+  // force = fermer vraiment, même si le micro doit rester ouvert pendant l'exercice
+  function closeMic(force = false) {
     if (!mic) return;
+    if (!force && keepOpen() && mic.stream.getAudioTracks().some(t => t.readyState === 'live')) return;
     try { mic.src.disconnect(); } catch (e) { /* ignore */ }
     mic.stream.getTracks().forEach(t => t.stop());
     mic = null;
@@ -224,7 +236,9 @@ const Audio = (() => {
 
   // Infos pour le diagnostic (Profil)
   function info() {
-    return ctx ? { state: ctx.state, rate: ctx.sampleRate, mic: !!mic, session: navigator.audioSession?.type || 'n/a' } : { state: 'non créé', rate: 0, mic: !!mic, session: navigator.audioSession?.type || 'n/a' };
+    const base = { mic: !!mic, session: navigator.audioSession?.type || 'n/a', ios: IOS, app: STANDALONE, keep: keepOpen(),
+      track: mic ? (mic.stream.getAudioTracks()[0]?.readyState + (mic.stream.getAudioTracks()[0]?.muted ? ' (muet)' : '')) : '-' };
+    return ctx ? { state: ctx.state, rate: ctx.sampleRate, ...base } : { state: 'non créé', rate: 0, ...base };
   }
 
   // Lecture d'une trame : { t, midi (float) | null, rms, dead }
@@ -251,7 +265,7 @@ const Audio = (() => {
 
   // Si le micro est mort depuis un moment, on le referme et on le rouvre
   async function reviveMic() {
-    closeMic();
+    closeMic(true);
     try { ensure(); await openMic(); return true; } catch (e) { return false; }
   }
 
@@ -267,7 +281,7 @@ const Audio = (() => {
         deadSince = deadSince ?? performance.now();
         if (!reviving && performance.now() - deadSince > 1200 && performance.now() - lastRevive > 4000) {
           lastRevive = performance.now();
-          reviving = true; onDead && onDead();
+          reviving = true; onDead && onDead(ctx && ctx.state !== 'running' ? 'suspended' : 'mic');
           await reviveMic(); deadSince = null; reviving = false; frozen = 0;
         }
       } else deadSince = null;
@@ -282,7 +296,7 @@ const Audio = (() => {
   }
   const listeners = new Set();
   // Coupe toutes les écoutes en cours et le micro (quand on change d'écran)
-  function stopListening() { [...listeners].forEach(f => f()); closeMic(); }
+  function stopListening() { [...listeners].forEach(f => f()); closeMic(true); }
 
   // Attend une note tenue stable. Renvoie { midi } (float, médiane), null si délai dépassé,
   // ou { aborted: true } si on a appuyé sur Arrêter. Ne peut jamais rester bloqué.
@@ -392,7 +406,7 @@ const Audio = (() => {
 
   return {
     ensure, now, setVolume, stopAll, playNote, playSeq, click, playBuffer, wait, waitUntil,
-    unlock, rebuild, info, stopListening, openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
+    unlock, rebuild, info, stopListening, setMicMode, IOS, STANDALONE, openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
     decodeFile, pitchTrack, framesToNotes, get ctx() { return ctx; }, get micOpen() { return !!mic; },
   };
 })();

@@ -226,7 +226,7 @@ const Exercise = (() => {
           meter.reset('Chante et tiens la note…');
           if (S().drone) Audio.playNote(refM, 0, 8, { timbre: 'soft', vol: 0.25 });
           res = await Audio.captureStableNote({ timeout: 8000, signal: sig, onFrame: f => meter.update(f),
-            onDead: () => meter.reset('Le micro s\u2019est coupé, je le relance… continue de chanter') });
+            onDead: why => meter.reset(why === 'suspended' ? 'Le son est en pause : touche l\u2019écran pour le réactiver' : 'Le micro s\u2019est coupé, je le relance… continue de chanter') });
         } else res = { aborted: true };
       } catch (e) { toast(e.message || 'Micro refusé', 'bad'); res = { aborted: true }; }
       Audio.stopAll(); Audio.closeMic();
@@ -436,6 +436,7 @@ const Exercise = (() => {
   }
 
   async function end() {
+    Audio.stopListening();
     const ratio = cur.score / cur.total;
     const body = $('#ex-body'); body.innerHTML = '';
     let res = { stars: 0, newCat: null };

@@ -89,7 +89,7 @@ const Game = (() => {
   const KEY = 'mofumusic.v1';
   const DEFAULT = {
     xp: 0, levels: {}, stats: {}, cats: [], history: [], streak: { day: null, count: 0 },
-    settings: { range: 'medium', naming: 'fr', octaveTol: true, tempo: 80, accomp: false, drone: false, showNames: true, volume: 0.8 },
+    settings: { range: 'medium', naming: 'fr', octaveTol: true, tempo: 80, accomp: false, drone: false, showNames: true, volume: 0.8, micMode: 'auto' },
   };
   let state = load();
   function load() {
