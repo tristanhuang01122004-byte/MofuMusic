@@ -202,6 +202,7 @@ const Audio = (() => {
     const an = ctx.createAnalyser(); an.fftSize = 2048;
     src.connect(hp); hp.connect(an);
     mic = { stream, src, an, hp, buf: new Float32Array(an.fftSize) };
+    lastSum = null; frozen = 0;
     // laisser le temps au téléphone de basculer de mode audio
     await wait(150);
     if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) { /* ignore */ } }
@@ -226,53 +227,85 @@ const Audio = (() => {
     return ctx ? { state: ctx.state, rate: ctx.sampleRate, mic: !!mic, session: navigator.audioSession?.type || 'n/a' } : { state: 'non créé', rate: 0, mic: !!mic, session: navigator.audioSession?.type || 'n/a' };
   }
 
-  // Lecture d'une trame : { t, midi (float) | null, rms }
+  // Lecture d'une trame : { t, midi (float) | null, rms, dead }
+  // dead = le micro ne donne plus rien (piste coupée par le téléphone, audio en pause…)
+  let lastSum = null, frozen = 0;
   function readPitch() {
-    if (!mic) return null;
+    const t = ctx ? ctx.currentTime : 0;
+    if (!mic) return { t, midi: null, rms: 0, dead: true };
+    const track = mic.stream.getAudioTracks()[0];
+    if (!track || track.readyState === 'ended') return { t, midi: null, rms: 0, dead: true };
+    if (ctx.state !== 'running') { ctx.resume().catch(() => {}); return { t, midi: null, rms: 0, dead: true }; }
     mic.an.getFloatTimeDomainData(mic.buf);
-    let s = 0; for (let i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
+    let s = 0, sum = 0;
+    for (let i = 0; i < mic.buf.length; i++) { s += mic.buf[i] * mic.buf[i]; sum += mic.buf[i] * (i + 1); }
+    // tampon figé (identique d'une trame à l'autre) = flux mort ; un silence total reste un silence
+    frozen = (s > 0 && sum === lastSum) ? frozen + 1 : 0; lastSum = sum;
     const rms = Math.sqrt(s / mic.buf.length);
-    const t = ctx.currentTime;
+    if (frozen > 20 || track.muted) return { t, midi: null, rms: 0, dead: true };
     if (rms < 0.004) return { t, midi: null, rms };
     const r = yin(mic.buf, ctx.sampleRate, 70, 1100, 0.12);
     if (!r || r.clarity < 0.82) return { t, midi: null, rms };
     return { t, midi: Music.midiFromFreq(r.freq), rms };
   }
 
-  // Écoute continue : appelle onFrame(frame) toutes les ~30 ms jusqu'à stop()
-  function listen(onFrame) {
-    let alive = true;
-    const loop = () => {
+  // Si le micro est mort depuis un moment, on le referme et on le rouvre
+  async function reviveMic() {
+    closeMic();
+    try { ensure(); await openMic(); return true; } catch (e) { return false; }
+  }
+
+  // Écoute continue : appelle onFrame(frame) toutes les ~25 ms jusqu'à stop().
+  // Appelée même sans son (frame.midi = null) pour que l'arrêt et les délais fonctionnent toujours.
+  let lastRevive = 0;
+  function listen(onFrame, { onDead } = {}) {
+    let alive = true, deadSince = null, reviving = false;
+    const loop = async () => {
       if (!alive) return;
-      const f = readPitch(); if (f) onFrame(f);
+      const f = readPitch();
+      if (f.dead) {
+        deadSince = deadSince ?? performance.now();
+        if (!reviving && performance.now() - deadSince > 1200 && performance.now() - lastRevive > 4000) {
+          lastRevive = performance.now();
+          reviving = true; onDead && onDead();
+          await reviveMic(); deadSince = null; reviving = false; frozen = 0;
+        }
+      } else deadSince = null;
+      if (!alive) return;
+      try { onFrame(f); } catch (e) { console.error(e); }
       setTimeout(loop, 25);
     };
     loop();
-    return () => { alive = false; };
+    const stop = () => { alive = false; listeners.delete(stop); };
+    listeners.add(stop);
+    return stop;
   }
+  const listeners = new Set();
+  // Coupe toutes les écoutes en cours et le micro (quand on change d'écran)
+  function stopListening() { [...listeners].forEach(f => f()); closeMic(); }
 
-  // Attend une note tenue stable. Renvoie { midi } (float, médiane) ou null si délai dépassé.
-  function captureStableNote({ timeout = 7000, holdMs = 450, onFrame, signal } = {}) {
+  // Attend une note tenue stable. Renvoie { midi } (float, médiane), null si délai dépassé,
+  // ou { aborted: true } si on a appuyé sur Arrêter. Ne peut jamais rester bloqué.
+  function captureStableNote({ timeout = 8000, holdMs = 450, onFrame, onDead, signal } = {}) {
     return new Promise(resolve => {
       const frames = [];
-      const t0 = performance.now();
       let done = false;
+      const finish = v => { if (done) return; done = true; stop(); clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(v); };
+      const onAbort = () => finish({ aborted: true });
+      const timer = setTimeout(() => finish(null), timeout);
+      if (signal) { if (signal.aborted) { setTimeout(onAbort); } else signal.addEventListener('abort', onAbort); }
       const stop = listen(f => {
         if (done) return;
         onFrame && onFrame(f);
-        if (signal?.aborted) { finish(null); return; }
-        if (f.midi != null) frames.push({ tm: performance.now(), m: f.midi });
-        else if (frames.length && performance.now() - frames[frames.length - 1].tm > 150) frames.length = 0;
-        // fenêtre récente
         const nowMs = performance.now();
+        if (f.midi != null) frames.push({ tm: nowMs, m: f.midi });
+        else if (frames.length && nowMs - frames[frames.length - 1].tm > 150) frames.length = 0;
         const recent = frames.filter(x => nowMs - x.tm <= holdMs);
         if (recent.length >= Math.max(6, holdMs / 50)) {
           const med = median(recent.map(x => x.m));
-          if (recent.every(x => Math.abs(x.m - med) < 0.6)) { finish({ midi: med }); return; }
+          if (recent.every(x => Math.abs(x.m - med) < 0.6)) finish({ midi: med });
         }
-        if (nowMs - t0 > timeout) finish(null);
-      });
-      function finish(v) { done = true; stop(); resolve(v); }
+      }, { onDead });
     });
   }
 
@@ -359,7 +392,7 @@ const Audio = (() => {
 
   return {
     ensure, now, setVolume, stopAll, playNote, playSeq, click, playBuffer, wait, waitUntil,
-    unlock, rebuild, info, openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
+    unlock, rebuild, info, stopListening, openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
     decodeFile, pitchTrack, framesToNotes, get ctx() { return ctx; }, get micOpen() { return !!mic; },
   };
 })();

@@ -104,14 +104,20 @@ const Exercise = (() => {
   }
 
   // Enregistre la voix pendant `dur` secondes à partir de t0 (temps audio). onFrame(p) avec p.t relatif.
-  async function recordAlong(t0, dur, onFrame) {
+  // signal (AbortController) : permet d'arrêter avant la fin ; frames.aborted = true dans ce cas
+  async function recordAlong(t0, dur, onFrame, signal) {
     const frames = [];
     const stop = Audio.listen(f => {
       const p = { t: f.t - t0, midi: f.midi, rms: f.rms };
       if (p.t >= -0.2) { frames.push(p); onFrame && onFrame(p); }
     });
-    await Audio.waitUntil(t0 + dur + 0.25);
+    await new Promise(res => {
+      const ms = Math.max(0, (t0 + dur + 0.25 - Audio.now()) * 1000);
+      const timer = setTimeout(res, ms);
+      if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); res(); }, { once: true });
+    });
     stop();
+    if (signal?.aborted) frames.aborted = true;
     return frames;
   }
 
@@ -208,16 +214,26 @@ const Exercise = (() => {
     let abort = null;
     const singBtn = btn('🎤 Chanter', async () => {
       if (cur.answered) return;
-      if (abort) { abort.abort(); return; }
-      try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); return; }
+      if (abort) { abort.abort(); return; } // « Arrêter » marche même pendant l'ouverture du micro
       abort = new AbortController();
+      const sig = abort.signal;
       singBtn.textContent = '⏹ Arrêter';
-      meterEl.classList.remove('hidden'); meter.reset('Chante et tiens la note…');
-      if (S().drone) Audio.playNote(refM, 0, 8, { timbre: 'soft', vol: 0.25 });
-      const res = await Audio.captureStableNote({ timeout: 8000, onFrame: f => meter.update(f), signal: abort.signal });
+      meterEl.classList.remove('hidden'); meter.reset('Ouverture du micro…');
+      let res = null;
+      try {
+        await Audio.openMic();
+        if (!sig.aborted) {
+          meter.reset('Chante et tiens la note…');
+          if (S().drone) Audio.playNote(refM, 0, 8, { timbre: 'soft', vol: 0.25 });
+          res = await Audio.captureStableNote({ timeout: 8000, signal: sig, onFrame: f => meter.update(f),
+            onDead: () => meter.reset('Le micro s\u2019est coupé, je le relance… continue de chanter') });
+        } else res = { aborted: true };
+      } catch (e) { toast(e.message || 'Micro refusé', 'bad'); res = { aborted: true }; }
       Audio.stopAll(); Audio.closeMic();
       abort = null; singBtn.textContent = '🎤 Chanter';
-      if (!res) { meter.reset('Je n’ai pas entendu de note tenue. Réessaie !'); return; }
+      if (cur.answered) return;
+      if (res?.aborted) { meter.reset('Arrêté. Appuie sur « Chanter » pour réessayer.'); return; }
+      if (!res) { meter.reset('Je n\u2019ai pas entendu de note tenue. Rapproche-toi du micro et réessaie !'); return; }
       answer(res.midi, 'voix');
     }, 'primary');
 
@@ -330,12 +346,20 @@ const Exercise = (() => {
 
     const playMelody = () => { Audio.stopAll(); const t = Audio.now() + 0.1; Audio.playSeq(q.notes, t, { timbre: 'piano', vol: 0.6 }); roll.play(t, q.total); };
 
-    const singBtn = btn('🎤 Chanter l’harmonie', async () => {
-      if (cur.answered || cur.busy) return;
-      try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); return; }
-      cur.busy = true; singBtn.disabled = true;
+    let recAbort = null;
+    const singLabel = '🎤 Chanter l\u2019harmonie';
+    const singBtn = btn(singLabel, async () => {
+      if (cur.answered) return;
+      if (recAbort) { recAbort.abort(); return; } // bouton « Arrêter »
+      recAbort = new AbortController();
+      const sig = recAbort.signal;
+      singBtn.textContent = '⏹ Arrêter';
+      meterEl.classList.remove('hidden'); meter.reset('Ouverture du micro…');
+      const done = () => { Audio.stopAll(); Audio.closeMic(); roll.stop(); recAbort = null; singBtn.textContent = singLabel; };
+      try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); done(); meter.reset('Micro indisponible'); return; }
+      if (sig.aborted) { done(); meter.reset('Arrêté'); return; }
       Audio.stopAll();
-      meterEl.classList.remove('hidden'); meter.reset('Décompte…');
+      meter.reset('Décompte…');
       const t = Audio.now() + 0.2;
       for (let i = 0; i < 4; i++) Audio.click(t + i * spb, i === 0);
       Audio.playNote(q.notes[0].midi, t, spb * 3.5, { timbre: 'soft', vol: 0.3 }); // note de repère pendant le décompte
@@ -343,9 +367,10 @@ const Exercise = (() => {
       if (S().accomp) Audio.playSeq(q.notes, t0, { timbre: 'piano', vol: 0.35 });
       else q.notes.forEach((n, i) => Audio.click(t0 + n.start, false));
       roll.trace = []; roll.play(t0, q.total);
-      const frames = await recordAlong(t0, q.total, p => { meter.update(p); if (p.t >= 0) { roll.trace.push(p); } });
-      Audio.closeMic();
-      cur.busy = false; singBtn.disabled = false;
+      const frames = await recordAlong(t0, q.total, p => { meter.update(p); if (p.t >= 0) { roll.trace.push(p); } }, sig);
+      done();
+      if (cur.answered) return;
+      if (frames.aborted) { roll.trace = []; roll.draw(); meter.reset('Arrêté. Appuie sur « Chanter » pour réessayer.'); return; }
       finish(evalNotes(part.targets, frames), 'voix');
     }, 'primary');
 

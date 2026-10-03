@@ -138,7 +138,7 @@ const Song = (() => {
     if (i === 2) return !!st.region;
     return st.notes.length > 0 && !!st.key && (i < 5 || st.harmony.length > 0);
   }
-  function go(i) { Audio.stopAll(); if (canGo(i)) { st.step = i; if (i >= 4) computeHarmony(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); } }
+  function go(i) { Audio.stopListening(); Audio.stopAll(); if (canGo(i)) { st.step = i; if (i >= 4) computeHarmony(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); } }
   const nextBtn = (label = 'Étape suivante →') => btn(label, () => go(st.step + 1), 'primary');
   const tip = (cat, ...content) => h('div.tip', h('img', { src: cat, alt: '' }), h('div', ...content));
 
@@ -391,11 +391,18 @@ const Song = (() => {
     roll.set(tgtLayer ? [melLayer, tgtLayer] : [melLayer]);
     const meterEl = h('div'); const meter = new UI.Meter(meterEl);
     const fb = h('div.feedback');
-    let busy = false;
+    let recAbort = null, singBtn = null;
+    const singLabel = '🎤 Chanter (décompte de 4 clics)';
     const go2 = async () => {
-      if (busy) return;
-      try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); return; }
-      busy = true; Audio.stopAll(); fb.innerHTML = '';
+      if (recAbort) { recAbort.abort(); return; } // bouton « Arrêter »
+      recAbort = new AbortController();
+      const sig = recAbort.signal;
+      singBtn.textContent = '⏹ Arrêter';
+      const done = () => { Audio.stopAll(); Audio.closeMic(); roll.stop(); recAbort = null; singBtn.textContent = singLabel; };
+      meter.reset('Ouverture du micro…');
+      try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); done(); return; }
+      if (sig.aborted) { done(); meter.reset('Arrêté'); return; }
+      Audio.stopAll(); fb.innerHTML = '';
       const spb = 0.5, t = Audio.now() + 0.2;
       for (let i = 0; i < 4; i++) Audio.click(t + i * spb, i === 0);
       if (targets[0]) Audio.playNote(targets[0].midi, t, spb * 3.5, { timbre: 'soft', vol: 0.3 });
@@ -404,9 +411,9 @@ const Song = (() => {
       if (guide) Audio.playSeq(guide, t0, { timbre: 'flute', vol: 0.4 });
       roll.trace = []; roll.play(t0, regionDur());
       meter.reset('Décompte…');
-      const frames = await Exercise.recordAlong(t0, regionDur(), p => { meter.update(p); if (p.t >= 0) roll.trace.push(p); });
-      Audio.closeMic();
-      busy = false;
+      const frames = await Exercise.recordAlong(t0, regionDur(), p => { meter.update(p); if (p.t >= 0) roll.trace.push(p); }, sig);
+      done();
+      if (frames.aborted) { roll.trace = []; roll.draw(); meter.reset('Arrêté. Appuie sur « Chanter » pour réessayer.'); return; }
       const res = Exercise.evalNotes(targets, frames, 0.08);
       tgtLayer ? tgtLayer.notes.forEach((n, i) => n.state = res[i].state) : melLayer.notes.forEach((n, i) => n.state = res[i].state);
       roll.draw();
@@ -420,7 +427,7 @@ const Song = (() => {
           onDone ? onDone(ratio, stars) : null)));
     };
     body.append(h('div.card', h('h3', title), what, canvas, meterEl,
-      h('div.row.wrap', btn('🎤 Chanter (décompte de 4 clics)', go2, 'primary'),
+      h('div.row.wrap', (singBtn = btn(singLabel, go2, 'primary')),
         btn('▶ Écouter l’exemple', () => { Audio.stopAll(); const t = Audio.now() + 0.1; playRegionOriginal(t, 0.7); Audio.playSeq(targets, t, { timbre: 'flute', vol: 0.55 }); roll.play(t, regionDur()); }),
         btn('⏹', () => { Audio.stopAll(); roll.stop(); }, 'ghost'),
         st.step < STEPS.length - 1 ? btn('Étape suivante →', () => go(st.step + 1), 'ghost') : null), fb));

@@ -19,6 +19,7 @@ const App = (() => {
 
   function show(id) {
     if (current === 'profile' && id !== 'profile') stopMicTest();
+    if (id !== 'exercise') { Audio.stopListening(); Audio.stopAll(); }
     current = id;
     $$('.view').forEach(v => v.classList.toggle('on', v.id === 'view-' + id));
     $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === id));
