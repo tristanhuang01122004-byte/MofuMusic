@@ -1,5 +1,5 @@
 // Généré : liste des fichiers mis en cache pour le mode hors ligne
-const VERSION = 'mofumusic-v2';
+const VERSION = 'mofumusic-v3';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js',

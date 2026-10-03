@@ -348,3 +348,5 @@ footer { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
 #toasts { bottom: max(18px, env(safe-area-inset-bottom)); }
 body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
 @media (display-mode: standalone) { footer { font-size: 11px; } }
+details.help { margin-top: 10px; background: var(--bg2); border-radius: 12px; padding: 8px 12px; }
+details.help summary { cursor: pointer; font-weight: 700; color: var(--accent-2); }

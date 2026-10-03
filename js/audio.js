@@ -8,17 +8,53 @@ const Audio = (() => {
   let volume = 0.8;
   const active = new Set(); // sources en cours (pour tout arrêter)
 
+  // Création / réveil du contexte audio. Sur téléphone, le contexte peut être
+  // « suspended » ou « interrupted » (appel, écouteurs branchés…) : on le relance.
+  function build(sampleRate) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try { ctx = sampleRate ? new AC({ sampleRate, latencyHint: 'interactive' }) : new AC({ latencyHint: 'interactive' }); }
+    catch (e) { ctx = new AC(); }
+    comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4;
+    master = ctx.createGain(); master.gain.value = volume;
+    master.connect(comp); comp.connect(ctx.destination);
+    ctx.onstatechange = () => { if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {}); };
+  }
   function ensure() {
-    if (!ctx) {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-      comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -14; comp.ratio.value = 4;
-      master = ctx.createGain(); master.gain.value = volume;
-      master.connect(comp); comp.connect(ctx.destination);
-    }
-    if (ctx.state === 'suspended') ctx.resume();
+    if (!ctx || ctx.state === 'closed') build();
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
     return ctx;
   }
+  // Jette le contexte (ex. écouteurs branchés/débranchés) : le prochain son en recrée un propre
+  function rebuild() {
+    stopAll(); closeMic();
+    if (ctx) { try { ctx.close(); } catch (e) { /* ignore */ } }
+    ctx = null;
+  }
+
+  // ----- Session audio (iPhone) -----
+  // Sans ça, Safari coupe les sons quand le téléphone est en mode silencieux,
+  // et envoie le son dans l'écouteur du haut (très faible) quand le micro est ouvert.
+  function setSession(type) {
+    try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) { /* non supporté */ }
+  }
+  let silentEl = null;
+  function unlock() {
+    ensure();
+    if (!mic) setSession('playback');
+    // son muet (bascule iOS en catégorie « lecture », qui ignore le bouton silencieux)
+    try {
+      const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource();
+      src.buffer = b; src.connect(ctx.destination); src.start(0);
+    } catch (e) { /* ignore */ }
+    if (!silentEl && /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent) && 'ontouchend' in document) {
+      silentEl = document.createElement('audio');
+      silentEl.setAttribute('x-webkit-airplay', 'deny'); silentEl.preload = 'auto'; silentEl.loop = true;
+      silentEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAAAA';
+      silentEl.play().catch(() => {});
+    }
+  }
+
   const now = () => ensure().currentTime;
   function setVolume(v) { volume = v; if (master) master.gain.value = v; }
 
@@ -133,23 +169,61 @@ const Audio = (() => {
   }
 
   // ---------------- Micro ----------------
+  // Le micro n'est ouvert que pendant l'enregistrement, puis refermé : sinon le
+  // téléphone reste en mode « appel » et le son sort tout bas (ou plus du tout).
   let mic = null; // { stream, src, an, buf, hp }
+  let opening = false;
   async function openMic() {
+    opening = true;
+    try { return await openMicInner(); } finally { setTimeout(() => { opening = false; }, 1500); }
+  }
+  async function openMicInner() {
+    if (mic && mic.stream.getAudioTracks().some(t => t.readyState === 'live')) { ensure(); return mic; }
+    mic = null;
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Micro non disponible (il faut ouvrir l\u2019app en https ou sur localhost).');
+    setSession('play-and-record');
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    } catch (e) {
+      setSession('playback');
+      if (e && e.name === 'NotAllowedError') throw new Error('Accès au micro refusé : autorise-le dans les réglages du navigateur.');
+      if (e && e.name === 'NotFoundError') throw new Error('Aucun micro trouvé.');
+      // certains téléphones refusent ces options : on réessaie avec les réglages par défaut
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    // Si la fréquence du micro diffère de celle du contexte (fréquent avec des écouteurs
+    // filaires sur iPhone), on recrée le contexte à la bonne fréquence, sinon : silence.
+    const rate = stream.getAudioTracks()[0]?.getSettings?.().sampleRate;
+    if (ctx && rate && Math.abs(ctx.sampleRate - rate) > 1) { stopAll(); try { ctx.close(); } catch (e) { /* ignore */ } ctx = null; build(rate); }
     ensure();
-    if (mic) return mic;
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Micro non disponible (il faut ouvrir l’app en https ou sur localhost).');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     const src = ctx.createMediaStreamSource(stream);
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 60;
     const an = ctx.createAnalyser(); an.fftSize = 2048;
     src.connect(hp); hp.connect(an);
     mic = { stream, src, an, hp, buf: new Float32Array(an.fftSize) };
+    // laisser le temps au téléphone de basculer de mode audio
+    await wait(150);
+    if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) { /* ignore */ } }
     return mic;
   }
   function closeMic() {
     if (!mic) return;
+    try { mic.src.disconnect(); } catch (e) { /* ignore */ }
     mic.stream.getTracks().forEach(t => t.stop());
     mic = null;
+    setSession('playback');
+  }
+
+  // Écouteurs branchés / débranchés : on repart sur un contexte audio neuf
+  if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
+    // (ignoré pendant un enregistrement : certains navigateurs le déclenchent à l'ouverture du micro)
+    navigator.mediaDevices.addEventListener('devicechange', () => { if (!mic && !opening) rebuild(); });
+  }
+
+  // Infos pour le diagnostic (Profil)
+  function info() {
+    return ctx ? { state: ctx.state, rate: ctx.sampleRate, mic: !!mic, session: navigator.audioSession?.type || 'n/a' } : { state: 'non créé', rate: 0, mic: !!mic, session: navigator.audioSession?.type || 'n/a' };
   }
 
   // Lecture d'une trame : { t, midi (float) | null, rms }
@@ -159,7 +233,7 @@ const Audio = (() => {
     let s = 0; for (let i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
     const rms = Math.sqrt(s / mic.buf.length);
     const t = ctx.currentTime;
-    if (rms < 0.008) return { t, midi: null, rms };
+    if (rms < 0.004) return { t, midi: null, rms };
     const r = yin(mic.buf, ctx.sampleRate, 70, 1100, 0.12);
     if (!r || r.clarity < 0.82) return { t, midi: null, rms };
     return { t, midi: Music.midiFromFreq(r.freq), rms };
@@ -285,7 +359,7 @@ const Audio = (() => {
 
   return {
     ensure, now, setVolume, stopAll, playNote, playSeq, click, playBuffer, wait, waitUntil,
-    openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
+    unlock, rebuild, info, openMic, closeMic, readPitch, listen, captureStableNote, median, yin,
     decodeFile, pitchTrack, framesToNotes, get ctx() { return ctx; }, get micOpen() { return !!mic; },
   };
 })();

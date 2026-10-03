@@ -405,6 +405,7 @@ const Song = (() => {
       roll.trace = []; roll.play(t0, regionDur());
       meter.reset('Décompte…');
       const frames = await Exercise.recordAlong(t0, regionDur(), p => { meter.update(p); if (p.t >= 0) roll.trace.push(p); });
+      Audio.closeMic();
       busy = false;
       const res = Exercise.evalNotes(targets, frames, 0.08);
       tgtLayer ? tgtLayer.notes.forEach((n, i) => n.state = res[i].state) : melLayer.notes.forEach((n, i) => n.state = res[i].state);

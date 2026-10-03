@@ -215,7 +215,7 @@ const Exercise = (() => {
       meterEl.classList.remove('hidden'); meter.reset('Chante et tiens la note…');
       if (S().drone) Audio.playNote(refM, 0, 8, { timbre: 'soft', vol: 0.25 });
       const res = await Audio.captureStableNote({ timeout: 8000, onFrame: f => meter.update(f), signal: abort.signal });
-      Audio.stopAll();
+      Audio.stopAll(); Audio.closeMic();
       abort = null; singBtn.textContent = '🎤 Chanter';
       if (!res) { meter.reset('Je n’ai pas entendu de note tenue. Réessaie !'); return; }
       answer(res.midi, 'voix');
@@ -227,7 +227,7 @@ const Exercise = (() => {
       btn('🎹 Clavier', () => kbEl.classList.toggle('hidden')),
       btn('🤷 Je ne sais pas', () => { if (!cur.answered) answer(null, 'passe'); }, 'ghost'));
 
-    body.append(h('div.card.question', h('div.q-top', h('img.q-cat', { src: Game.CATS.listen, alt: '' }), bubble), actions, meterEl, kbEl, fb));
+    body.append(h('div.card.question', h('div.q-top', h('img.q-cat', { src: Game.CATS.listen, alt: '' }), bubble), actions, h('p.dim.small.nosound', '🔇 Pas de son ? Désactive le mode silencieux, monte le volume, ou fais le test dans ', h('a', { href: '#', onclick: e => { e.preventDefault(); Audio.stopAll(); App.show('profile'); } }, 'Profil'), '.'), meterEl, kbEl, fb));
     playRef();
 
     function answer(sung, how) {
@@ -344,6 +344,7 @@ const Exercise = (() => {
       else q.notes.forEach((n, i) => Audio.click(t0 + n.start, false));
       roll.trace = []; roll.play(t0, q.total);
       const frames = await recordAlong(t0, q.total, p => { meter.update(p); if (p.t >= 0) { roll.trace.push(p); } });
+      Audio.closeMic();
       cur.busy = false; singBtn.disabled = false;
       finish(evalNotes(part.targets, frames), 'voix');
     }, 'primary');

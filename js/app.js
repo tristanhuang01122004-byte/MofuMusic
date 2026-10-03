@@ -271,7 +271,7 @@ const App = (() => {
 
   // ---------------- Profil ----------------
   let micStop = null;
-  function stopMicTest() { if (micStop) { micStop(); micStop = null; } }
+  function stopMicTest() { if (micStop) { micStop(); micStop = null; Audio.closeMic(); } }
   function renderProfile() {
     stopMicTest();
     const root = $('#view-profile'); root.innerHTML = '';
@@ -279,7 +279,9 @@ const App = (() => {
     const set = (k, v) => { st.settings[k] = v; Game.save(); if (k === 'naming') Music.setNaming(v); if (k === 'volume') Audio.setVolume(v); };
     const sel = (k, opts) => h('select', { onchange: e => { set(k, e.target.value); renderProfile(); } }, opts.map(([v, l]) => h('option', { value: v, selected: st.settings[k] === v }, l)));
     const chk = (k, l, d) => h('label.check' + (st.settings[k] ? '.on' : ''), h('input', { type: 'checkbox', checked: st.settings[k], onchange: e => { set(k, e.target.checked); e.target.parentNode.classList.toggle('on', e.target.checked); } }), h('span', l, d ? h('small.dim', ' — ' + d) : null));
-    const meterEl = h('div'); const meter = new UI.Meter(meterEl); meter.reset('Clique sur « Tester »');
+    const meterEl = h('div'); const meter = new UI.Meter(meterEl); meter.reset('Appuie sur « Tester le micro »');
+    const diag = h('p.dim.small');
+    const showDiag = () => { const i = Audio.info(); diag.textContent = 'Audio : ' + i.state + (i.rate ? ' · ' + i.rate + ' Hz' : '') + ' · micro ' + (i.mic ? 'ouvert' : 'fermé') + (i.session !== 'n/a' ? ' · session ' + i.session : ''); };
     const stats = Object.entries(st.stats).filter(([, v]) => v.n >= 2).map(([k, v]) => ({ k, label: statLabel(k), p: v.ok / v.n, n: v.n })).sort((a, b) => a.p - b.p);
     root.append(h('h2', '🐱 Profil'),
       h('div.grid2',
@@ -295,11 +297,25 @@ const App = (() => {
           chk('showNames', 'Afficher le nom des notes', 'décoche pour travailler 100 % à l’oreille'),
           chk('accomp', 'Jouer la mélodie pendant que je chante', 'casque obligatoire'),
           chk('drone', 'Tenir la note de départ pendant que je chante', 'casque obligatoire'))),
-      h('div.card', h('h3', '🎤 Test du micro'), h('p.dim', 'Chante une note : elle doit s’afficher et l’aiguille rester près du centre. La barre du bas montre le volume capté.'),
-        meterEl, h('div.row', btn('Tester', async () => {
-          try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); return; }
-          stopMicTest(); meter.reset(); micStop = Audio.listen(f => meter.update(f));
-        }, 'primary'), btn('Arrêter', () => { stopMicTest(); meter.reset('Arrêté'); }, 'ghost'))),
+      h('div.card', h('h3', '🔊 Test du son et du micro'),
+        h('p.dim', '1) Appuie sur « Test du son » : tu dois entendre Do – Mi – Sol. 2) Appuie sur « Tester le micro » et chante une note : elle doit s\u2019afficher, l\u2019aiguille rester près du centre, et la barre du bas bouger avec ta voix.'),
+        h('div.row.wrap',
+          btn('🔊 Test du son', () => { stopMicTest(); Audio.unlock(); Audio.stopAll(); const t = Audio.now() + 0.1; [60, 64, 67].forEach((m, i) => Audio.playNote(m, t + i * 0.45, 0.4, { vol: 0.7 })); setTimeout(showDiag, 300); }),
+          btn('🎤 Tester le micro', async () => {
+            stopMicTest();
+            try { await Audio.openMic(); } catch (e) { toast(e.message || 'Micro refusé', 'bad'); return; }
+            meter.reset(); micStop = Audio.listen(f => meter.update(f)); showDiag();
+          }, 'primary'),
+          btn('Arrêter', () => { stopMicTest(); meter.reset('Arrêté'); showDiag(); }, 'ghost'),
+          btn('↻ Réinitialiser l\u2019audio', () => { stopMicTest(); Audio.rebuild(); meter.reset('Audio réinitialisé'); toast('Audio réinitialisé : refais le test du son'); }, 'ghost')),
+        meterEl, diag,
+        h('details.help', h('summary', 'Pas de son ou le micro ne réagit pas ?'),
+          h('ul',
+            h('li', h('b', 'iPhone en mode silencieux'), ' : désactive le bouton silencieux sur le côté et monte le volume (les boutons de volume, pendant qu\u2019un son joue).'),
+            h('li', h('b', 'Écouteurs filaires'), ' : branche-les ', h('b', 'avant'), ' d\u2019ouvrir l\u2019app. Si tu les branches pendant l\u2019utilisation, appuie sur « Réinitialiser l\u2019audio » (ou ferme et rouvre l\u2019app).'),
+            h('li', 'Le micro utilisé est celui des écouteurs s\u2019ils en ont un : chante près du micro du fil.'),
+            h('li', 'Vérifie que le navigateur a le droit d\u2019utiliser le micro (Réglages du téléphone → Safari / Chrome → Micro).'),
+            h('li', 'Ferme les autres applis qui utilisent le son (appel, musique, vocal…).')))),
       h('div.card', h('h3', '📊 Tes points à travailler'), stats.length ? h('div.stats', stats.slice(0, 12).map(s => h('div.statrow', h('span', s.label), h('div.bar', h('div', { style: { width: s.p * 100 + '%' } })), h('small', Math.round(s.p * 100) + ' % (' + s.n + ')'))))
         : h('p.dim', 'Joue quelques niveaux pour voir tes statistiques.')),
       h('div.card', h('h3', '🐾 Ta collection de chats (' + st.cats.length + ' / ' + Game.ALL_CATS.length + ')'),
@@ -326,7 +342,8 @@ const App = (() => {
     refreshHeader();
     show('home');
     // débloquer l'audio au premier geste (iOS)
-    document.addEventListener('pointerdown', () => Audio.ensure(), { once: true });
+    // et à chaque geste ensuite : le téléphone peut mettre l'audio en pause à tout moment
+    ['pointerdown', 'touchend', 'keydown'].forEach(ev => document.addEventListener(ev, () => Audio.unlock(), { capture: true, passive: true }));
   }
   document.addEventListener('DOMContentLoaded', init);
 
